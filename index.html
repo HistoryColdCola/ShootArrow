@@ -3,12 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover, shrink-to-fit=no">
-    <title>草原射箭 · 长按蓄力 · 双端完美</title>
+    <title>草原射箭 · 长按蓄力 · 精准一箭</title>
     <style>
         * {
             user-select: none;
             -webkit-tap-highlight-color: transparent;
-            /* 关键：全局禁用触摸动作导致的滚动/缩放/长按菜单 */
             touch-action: manipulation;
         }
 
@@ -22,7 +21,7 @@
             font-family: 'Segoe UI', 'Poppins', 'Courier New', monospace;
             padding: 12px;
             box-sizing: border-box;
-            touch-action: pan-y pinch-zoom; /* 允许整体轻微上下滑动，但canvas内会覆盖 */
+            touch-action: pan-y pinch-zoom;
         }
 
         .game-container {
@@ -45,7 +44,6 @@
             width: 100%;
             height: auto;
             aspect-ratio: 1000 / 550;
-            /* 关键：canvas内部完全禁止触摸滚动/缩放 */
             touch-action: none;
         }
 
@@ -89,9 +87,10 @@
 
         .message-area {
             background: #000000aa;
-            font-size: 0.8rem;
-            min-width: 140px;
+            font-size: 0.85rem;
+            min-width: 160px;
             text-align: center;
+            transition: all 0.1s;
         }
 
         button {
@@ -122,9 +121,14 @@
             color: #ffecb3;
             text-align: center;
         }
-        /* 避免iOS长按弹出菜单 */
+
         *:not(input):not(textarea) {
             -webkit-touch-callout: none;
+        }
+
+        /* 蓄力能量条装饰 */
+        .power-glow {
+            transition: text-shadow 0.05s;
         }
     </style>
 </head>
@@ -139,7 +143,7 @@
             <button id="resetBtn">🌾 重置草原 🌾</button>
         </div>
         <div class="tips">
-            💡 <strong>手机/电脑通用</strong>：长按蓄力 → 威力越大晃动越剧烈 → 松开即射箭！ 靶子会逐渐消失~
+            💡 <strong>手机/电脑通用</strong>：长按蓄力 → 威力越大晃动越剧烈 → 松开即射箭！ 命中靶心得高分！
         </div>
     </div>
 </div>
@@ -150,26 +154,27 @@
         const canvas = document.getElementById('archeryCanvas');
         const ctx = canvas.getContext('2d');
 
-        // ---------- 游戏配置 ----------
-        const TARGETS_COUNT = 8;      // 8个靶子，适中数量
+        // ---------- 游戏配置优化 ----------
+        const TARGETS_COUNT = 8;
         let targets = [];
         let score = 0;
         
-        // 弓箭/蓄力相关
-        let isCharging = false;        // 正在长按蓄力
-        let power = 0;                 // 0-100
+        // 弓箭/蓄力相关 - 修复蓄力反馈和脱手逻辑
+        let isCharging = false;        
+        let power = 0;                 
         let chargeStartTime = 0;
+        let chargeAnimationFrame = null;  // 平滑更新蓄力
         
-        // 蓄力时恍惚不定的偏移量 (模拟晃动)
+        // 蓄力恍惚偏移 (动态晃动)
         let aimOffsetX = 0;
         let aimOffsetY = 0;
         
-        // 弓箭手坐标 (左下方)
+        // 弓箭手坐标
         const archerX = 120;
         const archerY = 470;
         const targetBaseRadius = 28;
         
-        // UI 消息
+        // 消息定时器
         let messageTimer = null;
         
         // 箭矢飞行特效
@@ -181,41 +186,48 @@
             targetX: 0,
             targetY: 0,
             progress: 0,
-            hitTargetIdx: -1
         };
         
-        // 命中特效
+        // 命中特效与得分飘字
         let hitEffect = { active: false, x: 0, y: 0, timer: 0 };
+        let floatingScore = { active: false, x: 0, y: 0, value: 0, life: 0 };
         
-        // 当前瞄准点 (鼠标/手指实时坐标)
+        // 当前瞄准点 (实时手指/鼠标位置)
         let aimX = canvas.width / 2;
         let aimY = canvas.height / 2;
         
-        // 确保canvas尺寸初始化正确 (解决手机端坐标比例)
-        function resizeCanvas() {
-            // 逻辑尺寸固定1000x550，无需额外操作，但确保getBoundingClientRect正确
-        }
-        window.addEventListener('resize', resizeCanvas);
+        // 锁定射击冷却防止连发（防止在飞行期间再次射箭）
+        let shootCooldown = false;
         
         // ---------- 辅助函数 ----------
         function randomRange(min, max) {
             return min + Math.random() * (max - min);
         }
         
-        // 生成靶子，避免重叠
+        // 智能生成靶子 (避免重叠，且不超出边界，不过于靠近弓箭手)
         function generateTargets() {
             let newTargets = [];
+            const minDistFromArcher = 130;
+            const minDistBetween = 58;
             for(let i = 0; i < TARGETS_COUNT; i++) {
                 let overlap = true;
                 let attempts = 0;
                 let x, y;
-                while(overlap && attempts < 200) {
-                    x = randomRange(380, 920);
-                    y = randomRange(140, 450);
+                while(overlap && attempts < 300) {
+                    x = randomRange(360, 940);
+                    y = randomRange(130, 460);
                     overlap = false;
-                    if(Math.hypot(x - archerX, y - archerY) < 110) overlap = true;
+                    // 距离弓箭手太近不行
+                    if(Math.hypot(x - archerX, y - archerY) < minDistFromArcher) overlap = true;
+                    // 避免过于靠边
+                    if(x < 320 || x > 970) overlap = true;
+                    if(y < 100 || y > 490) overlap = true;
+                    // 靶子之间重叠检测
                     for(let t of newTargets) {
-                        if(Math.hypot(t.x - x, t.y - y) < 55) { overlap = true; break; }
+                        if(Math.hypot(t.x - x, t.y - y) < minDistBetween) { 
+                            overlap = true; 
+                            break; 
+                        }
                     }
                     attempts++;
                 }
@@ -228,56 +240,25 @@
             return newTargets;
         }
         
-        function resetGame() {
-            score = 0;
-            updateScoreUI();
-            targets = generateTargets();
-            cancelCharge();
-            isFlying = false;
-            arrowFlight.active = false;
-            hitEffect.active = false;
-            setMessage("🌾 按住屏幕长蓄力！晃动中射中靶心 🌾");
-            updatePowerUI(0);
-            power = 0;
-            isCharging = false;
-            aimOffsetX = 0;
-            aimOffsetY = 0;
-        }
-        
-        function cancelCharge() {
-            if(isCharging) {
-                isCharging = false;
-                power = 0;
-                updatePowerUI(0);
-            }
-        }
-        
-        function updateCharge(currentTime) {
-            if(!isCharging) return;
-            let elapsed = Math.min((currentTime - chargeStartTime) / 1200, 1.0);
-            let newPower = Math.floor(elapsed * 100);
-            if(newPower !== power) {
-                power = newPower;
-                updatePowerUI(power);
-            }
-            if(power >= 100) {
-                power = 100;
-                updatePowerUI(100);
-            }
+        function updateScoreUI() {
+            const scoreSpan = document.getElementById('scoreValue');
+            if(scoreSpan) scoreSpan.innerText = score;
         }
         
         function updatePowerUI(val) {
             const powerSpan = document.getElementById('powerPercent');
-            if(powerSpan) powerSpan.innerText = val;
-            let powerBoard = document.querySelector('.power-board');
+            if(powerSpan) {
+                powerSpan.innerText = val;
+                // 动态颜色效果
+                if(val >= 80) powerSpan.style.color = "#ff5500";
+                else if(val >= 40) powerSpan.style.color = "#ffaa33";
+                else powerSpan.style.color = "#ffd966";
+            }
+            const powerBoard = document.querySelector('.power-board');
             if(powerBoard) {
                 let intensity = val / 100;
-                powerBoard.style.boxShadow = `0 0 ${8 + intensity * 14}px #ffaa33`;
+                powerBoard.style.boxShadow = `0 0 ${6 + intensity * 18}px #ffaa33`;
             }
-        }
-        
-        function updateScoreUI() {
-            document.getElementById('scoreValue').innerText = score;
         }
         
         function setMessage(msg, isError = false) {
@@ -285,46 +266,86 @@
             const msgDiv = document.getElementById('statusMsg');
             if(msgDiv) {
                 msgDiv.innerHTML = msg;
-                msgDiv.style.color = isError ? "#ffb347" : "#ffe6b3";
+                msgDiv.style.background = isError ? "#8b3a2acc" : "#1f1a10cc";
+                msgDiv.style.color = isError ? "#ffcc88" : "#ffe6b3";
             }
             messageTimer = setTimeout(() => {
                 if(document.getElementById('statusMsg')) {
-                    document.getElementById('statusMsg').innerHTML = "🏹 长按蓄力，恍惚之间瞄准靶心 🏹";
+                    document.getElementById('statusMsg').innerHTML = "🏹 长按蓄力，瞄准靶心 🏹";
+                    document.getElementById('statusMsg').style.background = "#1f1a10cc";
                     document.getElementById('statusMsg').style.color = "#ffe6b3";
                 }
-            }, 1800);
+            }, 1500);
         }
         
-        // 核心射击: 基于蓄力值和瞄准点（带晃动）射出箭矢
+        function cancelCharge() {
+            if(isCharging) {
+                isCharging = false;
+                power = 0;
+                updatePowerUI(0);
+                if(chargeAnimationFrame) cancelAnimationFrame(chargeAnimationFrame);
+                chargeAnimationFrame = null;
+            }
+        }
+        
+        // 蓄力更新 (独立帧循环保证精确)
+        function startChargeUpdate() {
+            if(!isCharging) return;
+            const now = Date.now();
+            let elapsed = Math.min((now - chargeStartTime) / 1400, 1.0); // 1.4秒满力，手感更舒服
+            let newPower = Math.floor(elapsed * 100);
+            if(newPower > 100) newPower = 100;
+            if(newPower !== power) {
+                power = newPower;
+                updatePowerUI(power);
+            }
+            if(isCharging) {
+                chargeAnimationFrame = requestAnimationFrame(() => startChargeUpdate());
+            }
+        }
+        
+        // 蓄力开始时启动更新循环
+        function beginCharge(startTime) {
+            if(chargeAnimationFrame) cancelAnimationFrame(chargeAnimationFrame);
+            chargeStartTime = startTime;
+            chargeAnimationFrame = requestAnimationFrame(() => startChargeUpdate());
+        }
+        
+        // 修复核心: 释放箭矢优化判定并增加得分飘字
         function releaseArrow(pointerX, pointerY) {
-            if(isFlying) {
-                setMessage("等箭命中再拉弓~", false);
+            // 飞行中或冷却中不能射
+            if(isFlying || shootCooldown) {
+                setMessage("⏳ 等箭命中再拉弓吧 ~", false);
                 return false;
             }
             if(!isCharging && power === 0) {
-                setMessage("✋ 请长按蓄力再射箭！ ✋", false);
+                setMessage("✋ 请长按屏幕蓄力！ ✋", false);
                 return false;
             }
             
-            // 边界裁剪
-            let rawX = Math.min(Math.max(pointerX, 20), canvas.width - 20);
-            let rawY = Math.min(Math.max(pointerY, 20), canvas.height - 40);
+            // 边界裁剪瞄准点 (确保有效)
+            let rawX = Math.min(Math.max(pointerX, 30), canvas.width - 30);
+            let rawY = Math.min(Math.max(pointerY, 50), canvas.height - 50);
             
-            // 恍惚偏移惩罚: 威力越大晃动越剧烈
-            let wobbleFactor = (power / 100) ** 1.2;
-            let offsetX = aimOffsetX * 0.9 + (Math.random() - 0.5) * wobbleFactor * 34;
-            let offsetY = aimOffsetY * 0.9 + (Math.random() - 0.5) * wobbleFactor * 34;
+            // 恍惚偏移: 威力越大晃动越明显 (有趣难度)
+            let wobbleIntensity = (power / 100) ** 1.3;
+            // 根据蓄力增加偏移量，同时动态应用之前的偏移 + 随机
+            let offsetX = aimOffsetX * 0.7 + (Math.random() - 0.5) * wobbleIntensity * 38;
+            let offsetY = aimOffsetY * 0.7 + (Math.random() - 0.5) * wobbleIntensity * 38;
             let finalX = rawX + offsetX;
             let finalY = rawY + offsetY;
+            finalX = Math.min(Math.max(finalX, 20), canvas.width - 20);
+            finalY = Math.min(Math.max(finalY, 50), canvas.height - 40);
             
-            // 命中判定
+            // 命中判定（优先选择最近未击中的靶子）
             let hitIndex = -1;
             let minDist = 999;
             for(let i = 0; i < targets.length; i++) {
                 const t = targets[i];
                 if(t.hit) continue;
                 let dist = Math.hypot(finalX - t.x, finalY - t.y);
-                let hitRadius = t.radius + 4 + (power / 100) * 20;
+                // 判定半径随威力增加略微增加（更容易命中但晃动也大，平衡）
+                let hitRadius = t.radius + 3 + (power / 100) * 14;
                 if(dist < hitRadius && dist < minDist) {
                     minDist = dist;
                     hitIndex = i;
@@ -332,113 +353,168 @@
             }
             
             let gainedPoints = 0;
+            let isHit = false;
             if(hitIndex !== -1) {
                 const t = targets[hitIndex];
                 if(!t.hit) {
                     t.hit = true;
+                    isHit = true;
                     let centerDist = Math.hypot(finalX - t.x, finalY - t.y);
-                    let accuracy = Math.max(0, 1 - (centerDist / t.radius));
-                    let basePoints = Math.floor(8 + accuracy * 24);
-                    let powerBonus = Math.floor(power / 12);
+                    // 精准度加成 0.2~1
+                    let accuracy = Math.max(0.2, 1 - (centerDist / t.radius));
+                    let basePoints = Math.floor(12 + accuracy * 28);
+                    // 威力加成: 蓄力越高得分越高，但晃动风险也大
+                    let powerBonus = Math.floor(power / 10);
                     gainedPoints = basePoints + powerBonus;
-                    gainedPoints = Math.min(gainedPoints, 58);
+                    gainedPoints = Math.min(gainedPoints, 65);
                     score += gainedPoints;
                     updateScoreUI();
-                    setMessage(`🎯 正中靶心！ +${gainedPoints} 分 (威力${power}%) 🎯`, false);
+                    setMessage(`🎉 正中靶心！ +${gainedPoints} 分 (威力${power}%) 🎉`, false);
+                    // 命中特效
                     hitEffect.active = true;
                     hitEffect.x = t.x;
                     hitEffect.y = t.y;
-                    hitEffect.timer = 12;
+                    hitEffect.timer = 14;
+                    // 飘浮分数
+                    floatingScore.active = true;
+                    floatingScore.x = t.x;
+                    floatingScore.y = t.y - 20;
+                    floatingScore.value = gainedPoints;
+                    floatingScore.life = 28;
+                    // 震动反馈 (移动端)
+                    if(navigator.vibrate) navigator.vibrate(30);
                 }
-            } else {
-                setMessage(`💨 脱靶... 威力${power}% 恍惚射偏了 💨`, true);
+            } 
+            if(!isHit) {
+                setMessage(`💨 脱靶... 蓄力${power}% 晃动太猛射偏了 💨`, true);
+                if(navigator.vibrate) navigator.vibrate(50);
                 hitEffect.active = false;
             }
             
-            // 箭矢飞行动画
+            // 飞行箭矢特效 (即使脱靶也有箭飞轨迹)
             arrowFlight.active = true;
             arrowFlight.startX = archerX;
             arrowFlight.startY = archerY;
             arrowFlight.targetX = finalX;
             arrowFlight.targetY = finalY;
             arrowFlight.progress = 0;
-            arrowFlight.hitTargetIdx = hitIndex;
             isFlying = true;
+            shootCooldown = true;  // 锁定直到飞行结束
             
-            // 蓄力结束重置
+            // 重置蓄力和偏移
             cancelCharge();
             power = 0;
             updatePowerUI(0);
+            // 缓慢恢复偏移残留
             aimOffsetX = 0;
             aimOffsetY = 0;
             return true;
         }
         
-        // 更新恍惚晃动效果 (只在蓄力时)
+        // 蓄力时晃动算法更自然 (实时更新)
         function updateWobble() {
             if(isCharging && power > 0) {
-                let intensity = Math.min(power / 55, 1.5);
-                let time = Date.now() / 160;
-                let offX = Math.sin(time) * 8 * intensity + Math.cos(time * 2.2) * 5 * intensity;
-                let offY = Math.cos(time * 1.5) * 7 * intensity + Math.sin(time * 2.5) * 4 * intensity;
-                offX += (Math.random() - 0.5) * intensity * 4;
-                offY += (Math.random() - 0.5) * intensity * 4;
-                aimOffsetX = offX;
-                aimOffsetY = offY;
+                let intensity = Math.min(power / 45, 1.6);
+                let time = Date.now() / 140;
+                // 正弦+余弦产生不规则晃动
+                let offX = Math.sin(time) * 9 * intensity + Math.cos(time * 2.1) * 7 * intensity;
+                let offY = Math.cos(time * 1.7) * 8 * intensity + Math.sin(time * 2.4) * 6 * intensity;
+                offX += (Math.random() - 0.5) * intensity * 6;
+                offY += (Math.random() - 0.5) * intensity * 6;
+                // 限制最大偏移不超过30
+                aimOffsetX = Math.min(Math.max(offX, -26), 26);
+                aimOffsetY = Math.min(Math.max(offY, -22), 22);
             } else {
-                aimOffsetX *= 0.94;
-                aimOffsetY *= 0.94;
-                if(Math.abs(aimOffsetX) < 0.3) aimOffsetX = 0;
-                if(Math.abs(aimOffsetY) < 0.3) aimOffsetY = 0;
+                // 非蓄力时平滑回归
+                aimOffsetX *= 0.92;
+                aimOffsetY *= 0.92;
+                if(Math.abs(aimOffsetX) < 0.5) aimOffsetX = 0;
+                if(Math.abs(aimOffsetY) < 0.5) aimOffsetY = 0;
             }
         }
         
-        // ------------------- 绘图 -------------------
+        // 飞行箭矢更新
+        function updateFlight() {
+            if(arrowFlight.active) {
+                arrowFlight.progress += 0.048;
+                if(arrowFlight.progress >= 1.0) {
+                    arrowFlight.active = false;
+                    isFlying = false;
+                    // 解除射击冷却延迟(确保动画结束)
+                    setTimeout(() => { shootCooldown = false; }, 30);
+                }
+            }
+            if(hitEffect.active) {
+                hitEffect.timer--;
+                if(hitEffect.timer <= 0) hitEffect.active = false;
+            }
+            if(floatingScore.active) {
+                floatingScore.life -= 2;
+                floatingScore.y -= 1.2;
+                if(floatingScore.life <= 0) floatingScore.active = false;
+            }
+        }
+        
+        // ------------------- 精美绘图 -------------------
         function drawSkyAndGround() {
-            let gradSky = ctx.createLinearGradient(0, 0, 0, 280);
-            gradSky.addColorStop(0, "#c9e4ff");
-            gradSky.addColorStop(1, "#d4f1f9");
+            let gradSky = ctx.createLinearGradient(0, 0, 0, 300);
+            gradSky.addColorStop(0, "#b2dcff");
+            gradSky.addColorStop(1, "#daf0ff");
             ctx.fillStyle = gradSky;
             ctx.fillRect(0, 0, canvas.width, 280);
-            ctx.fillStyle = "#7cb518";
+            ctx.fillStyle = "#6f9e3f";
             ctx.fillRect(0, 280, canvas.width, canvas.height - 280);
-            for(let i=0; i<70; i++) {
+            // 草地细节
+            for(let i=0; i<120; i++) {
                 ctx.beginPath();
-                let x = (i * 27) % canvas.width;
-                let y = 400 + Math.sin(i * 0.6) * 7;
+                let x = (i * 19) % canvas.width;
+                let y = 410 + Math.sin(i * 0.5) * 8;
                 ctx.moveTo(x, y);
-                ctx.lineTo(x-7, y+24);
-                ctx.lineTo(x+7, y+24);
-                ctx.fillStyle = "#437c17";
+                ctx.lineTo(x-6, y+18);
+                ctx.lineTo(x+6, y+18);
+                ctx.fillStyle = "#528a2e";
                 ctx.fill();
             }
-            ctx.fillStyle = "#f9f3cfcc";
-            ctx.beginPath(); ctx.ellipse(180, 100, 50, 32, 0, 0, Math.PI*2); ctx.fill();
-            ctx.fillStyle = "#e0bc7caa";
-            ctx.beginPath(); ctx.ellipse(780, 80, 70, 40, 0, 0, Math.PI*2); ctx.fill();
+            // 云朵
+            ctx.fillStyle = "#f9f6e0cc";
+            ctx.beginPath(); ctx.ellipse(140, 80, 45, 32, 0, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(820, 100, 55, 38, 0, 0, Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.ellipse(900, 70, 40, 30, 0, 0, Math.PI*2); ctx.fill();
         }
         
         function drawArcher() {
             ctx.save();
+            // 身体
             ctx.beginPath();
-            ctx.arc(archerX-12, archerY-12, 18, 0, Math.PI*2);
-            ctx.fillStyle = "#ffcd94";
+            ctx.ellipse(archerX-8, archerY-12, 14, 19, 0, 0, Math.PI*2);
+            ctx.fillStyle = "#e3b37b";
             ctx.fill();
-            ctx.fillStyle = "#6b3e1c";
-            ctx.fillRect(archerX-25, archerY-8, 40, 28);
-            ctx.fillStyle = "#34200c";
+            ctx.fillStyle = "#5a361a";
+            ctx.fillRect(archerX-22, archerY-8, 40, 24);
+            ctx.fillStyle = "#3e2610";
             ctx.fillRect(archerX-12, archerY-18, 12, 32);
+            // 弓
             ctx.beginPath();
-            ctx.ellipse(archerX+6, archerY-12, 20, 9, -0.4, 0, Math.PI*2);
-            ctx.strokeStyle = "#b97f44";
-            ctx.lineWidth = 7;
+            ctx.ellipse(archerX+4, archerY-12, 22, 10, -0.4, 0, Math.PI*2);
+            ctx.strokeStyle = "#b87c3a";
+            ctx.lineWidth = 8;
             ctx.stroke();
-            ctx.fillStyle = "#e0a14b";
+            ctx.fillStyle = "#da9746";
             ctx.beginPath();
-            ctx.moveTo(archerX+8, archerY-22);
-            ctx.lineTo(archerX+26, archerY-14);
-            ctx.lineTo(archerX+10, archerY-6);
+            ctx.moveTo(archerX+10, archerY-24);
+            ctx.lineTo(archerX+32, archerY-14);
+            ctx.lineTo(archerX+14, archerY-4);
             ctx.fill();
+            // 头
+            ctx.beginPath();
+            ctx.arc(archerX-12, archerY-24, 15, 0, Math.PI*2);
+            ctx.fillStyle = "#ffcf94";
+            ctx.fill();
+            // 眼睛
+            ctx.fillStyle = "#2a2418";
+            ctx.beginPath(); ctx.arc(archerX-18, archerY-28, 3, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = "white";
+            ctx.beginPath(); ctx.arc(archerX-19, archerY-29, 1.2, 0, Math.PI*2); ctx.fill();
             ctx.restore();
         }
         
@@ -446,25 +522,27 @@
             for(let t of targets) {
                 if(t.hit) continue;
                 ctx.save();
+                ctx.shadowBlur = 0;
                 ctx.beginPath();
                 ctx.arc(t.x, t.y, t.radius, 0, Math.PI*2);
-                ctx.fillStyle = "#b5651e";
+                ctx.fillStyle = "#aa6f3c";
                 ctx.fill();
                 ctx.beginPath();
                 ctx.arc(t.x, t.y, t.radius-6, 0, Math.PI*2);
-                ctx.fillStyle = "#eac086";
+                ctx.fillStyle = "#e2af74";
                 ctx.fill();
                 ctx.beginPath();
                 ctx.arc(t.x, t.y, t.radius-12, 0, Math.PI*2);
-                ctx.fillStyle = "#b3413a";
+                ctx.fillStyle = "#c94f3a";
                 ctx.fill();
                 ctx.beginPath();
-                ctx.arc(t.x, t.y, 9, 0, Math.PI*2);
-                ctx.fillStyle = "#f9d66c";
+                ctx.arc(t.x, t.y, 10, 0, Math.PI*2);
+                ctx.fillStyle = "#ffd966";
                 ctx.fill();
                 ctx.font = "bold 20px monospace";
-                ctx.fillStyle = "white";
-                ctx.fillText("🎯", t.x-13, t.y-13);
+                ctx.fillStyle = "#fff1bf";
+                ctx.shadowBlur = 2;
+                ctx.fillText("🎯", t.x-12, t.y-12);
                 ctx.restore();
             }
         }
@@ -474,29 +552,40 @@
             let drawY = centerY + aimOffsetY;
             ctx.save();
             ctx.beginPath();
-            ctx.arc(drawX, drawY, 16, 0, Math.PI*2);
-            ctx.strokeStyle = "#fff9c4";
+            ctx.arc(drawX, drawY, 18, 0, Math.PI*2);
+            ctx.strokeStyle = "#fff5cf";
             ctx.lineWidth = 3;
             ctx.stroke();
             ctx.beginPath();
-            ctx.moveTo(drawX-28, drawY);
-            ctx.lineTo(drawX-12, drawY);
-            ctx.moveTo(drawX+12, drawY);
-            ctx.lineTo(drawX+28, drawY);
-            ctx.moveTo(drawX, drawY-28);
-            ctx.lineTo(drawX, drawY-12);
-            ctx.moveTo(drawX, drawY+12);
-            ctx.lineTo(drawX, drawY+28);
+            ctx.moveTo(drawX-32, drawY);
+            ctx.lineTo(drawX-14, drawY);
+            ctx.moveTo(drawX+14, drawY);
+            ctx.lineTo(drawX+32, drawY);
+            ctx.moveTo(drawX, drawY-32);
+            ctx.lineTo(drawX, drawY-14);
+            ctx.moveTo(drawX, drawY+14);
+            ctx.lineTo(drawX, drawY+32);
             ctx.stroke();
             ctx.beginPath();
-            ctx.arc(drawX, drawY, 6, 0, Math.PI*2);
-            ctx.fillStyle = "#ffd966cc";
+            ctx.arc(drawX, drawY, 8, 0, Math.PI*2);
+            ctx.fillStyle = "#ffd03acc";
             ctx.fill();
+            ctx.beginPath();
+            ctx.arc(drawX, drawY, 4, 0, Math.PI*2);
+            ctx.fillStyle = "#ffb347";
+            ctx.fill();
+            // 蓄力环展示
             if(isCharging && power > 0) {
+                let rad = 24 + (power/100)*15;
                 ctx.beginPath();
-                ctx.arc(drawX, drawY, 22 + power/14, 0, Math.PI*2);
-                ctx.strokeStyle = `rgba(255, 180, 40, ${0.4+power/150})`;
-                ctx.lineWidth = 5;
+                ctx.arc(drawX, drawY, rad, 0, Math.PI*2);
+                ctx.strokeStyle = `rgba(255, 170, 40, ${0.5+power/200})`;
+                ctx.lineWidth = 4;
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(drawX, drawY, rad+2, 0, Math.PI*2);
+                ctx.strokeStyle = `rgba(255, 80, 20, 0.6)`;
+                ctx.lineWidth = 2;
                 ctx.stroke();
             }
             ctx.restore();
@@ -509,36 +598,37 @@
             let y = arrowFlight.startY + (arrowFlight.targetY - arrowFlight.startY) * p;
             ctx.save();
             ctx.translate(x, y);
-            ctx.rotate(Math.atan2(arrowFlight.targetY - arrowFlight.startY, arrowFlight.targetX - arrowFlight.startX));
-            ctx.fillStyle = "#c97e3a";
-            ctx.fillRect(0, -3, 24, 6);
-            ctx.fillStyle = "#ac4e2b";
-            ctx.beginPath(); ctx.moveTo(24,0); ctx.lineTo(32,-4); ctx.lineTo(32,4); ctx.fill();
+            let angle = Math.atan2(arrowFlight.targetY - arrowFlight.startY, arrowFlight.targetX - arrowFlight.startX);
+            ctx.rotate(angle);
+            ctx.fillStyle = "#cc7b3a";
+            ctx.fillRect(0, -3, 28, 6);
+            ctx.fillStyle = "#a5552a";
+            ctx.beginPath(); ctx.moveTo(28,0); ctx.lineTo(36,-5); ctx.lineTo(36,5); ctx.fill();
+            ctx.fillStyle = "#f5bc70";
+            ctx.fillRect(8, -2, 12, 4);
             ctx.restore();
         }
         
-        function drawHitEffect() {
-            if(hitEffect.active && hitEffect.timer > 0) {
+        function drawHitAndScore() {
+            if(hitEffect.active) {
                 ctx.beginPath();
-                ctx.arc(hitEffect.x, hitEffect.y, 26, 0, Math.PI*2);
-                ctx.fillStyle = `rgba(255, 200, 60, 0.7)`;
+                ctx.arc(hitEffect.x, hitEffect.y, 28, 0, Math.PI*2);
+                ctx.fillStyle = `rgba(255, 200, 70, 0.7)`;
                 ctx.fill();
                 ctx.beginPath();
-                ctx.arc(hitEffect.x, hitEffect.y, 14, 0, Math.PI*2);
-                ctx.fillStyle = `rgba(255, 70, 20, 0.9)`;
+                ctx.arc(hitEffect.x, hitEffect.y, 15, 0, Math.PI*2);
+                ctx.fillStyle = `rgba(255, 100, 30, 0.9)`;
                 ctx.fill();
-                hitEffect.timer--;
-                if(hitEffect.timer <= 0) hitEffect.active = false;
             }
-        }
-        
-        function updateFlight() {
-            if(arrowFlight.active) {
-                arrowFlight.progress += 0.045;
-                if(arrowFlight.progress >= 1.0) {
-                    arrowFlight.active = false;
-                    isFlying = false;
-                }
+            if(floatingScore.active) {
+                ctx.font = "bold 28px 'Segoe UI'";
+                ctx.shadowBlur = 3;
+                ctx.fillStyle = "#ffef9e";
+                ctx.shadowColor = "black";
+                ctx.fillText(`+${floatingScore.value}`, floatingScore.x-18, floatingScore.y);
+                ctx.fillStyle = "#ffc95c";
+                ctx.fillText(`+${floatingScore.value}`, floatingScore.x-20, floatingScore.y-2);
+                ctx.shadowBlur = 0;
             }
         }
         
@@ -548,15 +638,18 @@
             drawTargets();
             drawArcher();
             drawFlyingArrow();
-            drawHitEffect();
+            drawHitAndScore();
             drawSight(aimX, aimY);
-            ctx.font = "bold 14px monospace";
-            ctx.fillStyle = "#fef0cf";
-            ctx.shadowBlur = 3;
-            ctx.fillText("⚡ 长按蓄力 · 威力越大晃动越剧烈 ⚡", 30, 48);
+            ctx.font = "bold 15px monospace";
+            ctx.fillStyle = "#fff7cf";
+            ctx.shadowBlur = 4;
+            ctx.fillText("⚡长按蓄力·威力越大箭越晃⚡", 28, 55);
+            ctx.font = "12px monospace";
+            ctx.fillStyle = "#eafbce";
+            ctx.fillText("松开射箭", archerX+10, archerY-35);
         }
         
-        // 获取canvas坐标 (支持移动端touch)
+        // 获取Canvas真实坐标(支持移动端touch&鼠标)
         function getCanvasCoords(e) {
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
@@ -572,16 +665,16 @@
             }
             let canvasX = (clientX - rect.left) * scaleX;
             let canvasY = (clientY - rect.top) * scaleY;
-            canvasX = Math.min(Math.max(canvasX, 10), canvas.width - 10);
-            canvasY = Math.min(Math.max(canvasY, 15), canvas.height - 30);
+            canvasX = Math.min(Math.max(canvasX, 20), canvas.width - 20);
+            canvasY = Math.min(Math.max(canvasY, 30), canvas.height - 40);
             return { mx: canvasX, my: canvasY };
         }
         
-        // ---- 触摸 / 鼠标 事件彻底阻止默认行为 ----
+        // ----- 事件统一管理，防止页面滚动 -----
         function onPointerStart(e) {
             e.preventDefault();
             e.stopPropagation();
-            if(isFlying) return;
+            if(isFlying || shootCooldown) return;
             cancelCharge();
             const coords = getCanvasCoords(e);
             if(coords) {
@@ -591,10 +684,9 @@
             isCharging = true;
             power = 0;
             updatePowerUI(0);
-            chargeStartTime = Date.now();
-            setMessage("🏹 蓄力中！ 恍惚晃动 威力上升 🏹");
-            if(navigator.vibrate) navigator.vibrate(15);
-            // 额外防止滚动
+            beginCharge(Date.now());
+            setMessage("🏹 蓄力中！ 晃动幅度随威力上升 🏹");
+            if(navigator.vibrate) navigator.vibrate(10);
             return false;
         }
         
@@ -612,7 +704,7 @@
             e.preventDefault();
             e.stopPropagation();
             if(!isCharging) return;
-            if(isFlying) {
+            if(isFlying || shootCooldown) {
                 cancelCharge();
                 return;
             }
@@ -623,45 +715,53 @@
                 releaseArrow(aimX, aimY);
             }
             isCharging = false;
-            if(navigator.vibrate) navigator.vibrate(10);
+            if(chargeAnimationFrame) cancelAnimationFrame(chargeAnimationFrame);
+            chargeAnimationFrame = null;
         }
         
         function attachEvents() {
             canvas.addEventListener('mousedown', onPointerStart);
             window.addEventListener('mousemove', onPointerMove);
             window.addEventListener('mouseup', onPointerEnd);
-            
             canvas.addEventListener('touchstart', onPointerStart, { passive: false });
             canvas.addEventListener('touchmove', onPointerMove, { passive: false });
             canvas.addEventListener('touchend', onPointerEnd);
             canvas.addEventListener('touchcancel', onPointerEnd);
-            // 彻底禁止从canvas出发的鼠标右键/长按菜单
             canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); return false; });
         }
         
-        // 动画循环
-        function updateFrame(now) {
+        function resetGame() {
+            score = 0;
+            updateScoreUI();
+            targets = generateTargets();
+            cancelCharge();
+            isFlying = false;
+            arrowFlight.active = false;
+            hitEffect.active = false;
+            floatingScore.active = false;
+            shootCooldown = false;
+            aimOffsetX = 0;
+            aimOffsetY = 0;
+            power = 0;
+            updatePowerUI(0);
+            setMessage("🌾 草原焕新！长按拉弓再试锋芒 🌾");
+        }
+        
+        function animateFrame(time) {
             updateWobble();
-            if(isCharging) {
-                updateCharge(now);
-            }
             updateFlight();
             drawAll();
-            requestAnimationFrame(updateFrame);
+            requestAnimationFrame(animateFrame);
         }
         
         document.getElementById('resetBtn').addEventListener('click', () => {
             resetGame();
-            isFlying = false;
-            arrowFlight.active = false;
-            cancelCharge();
-            setMessage("🌿 草原焕新！长按拉弓再试锋芒 🌿");
         });
         
         function init() {
             resetGame();
             attachEvents();
-            requestAnimationFrame(updateFrame);
+            animateFrame();
         }
         
         init();
