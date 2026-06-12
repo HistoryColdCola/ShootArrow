@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>草原射箭：长按蓄力·恍惚瞄准</title>
+    <style>
+        * {
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: linear-gradient(145deg, #1f5e3a 0%, #2b7a4b 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', 'Poppins', 'Press Start 2P', 'Courier New', monospace;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        /* 游戏主容器 */
+        .game-container {
+            background: #2d2b1f;
+            border-radius: 48px;
+            padding: 20px 24px 24px 24px;
+            box-shadow: 0 25px 40px rgba(0, 0, 0, 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.2);
+            border-bottom: 6px solid #a77b2e;
+        }
+
+        canvas {
+            display: block;
+            margin: 0 auto;
+            border-radius: 28px;
+            box-shadow: 0 12px 28px black;
+            cursor: crosshair;
+            background: #7ea86a;
+            transition: filter 0.1s;
+        }
+
+        /* UI面板 */
+        .info-panel {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-top: 20px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            gap: 12px;
+            background: #2c2418cc;
+            backdrop-filter: blur(4px);
+            padding: 12px 20px;
+            border-radius: 60px;
+            border: 1px solid #ebc28e;
+        }
+
+        .score-board, .power-board, .message-area {
+            background: #1f1a10;
+            padding: 6px 18px;
+            border-radius: 40px;
+            color: #ffe6b3;
+            text-shadow: 0 2px 2px black;
+            font-weight: bold;
+            letter-spacing: 1px;
+        }
+
+        .score-board span, .power-board span {
+            color: #ffd966;
+            font-size: 1.6rem;
+            margin-right: 8px;
+            font-weight: 800;
+        }
+
+        .power-board {
+            background: #342812;
+            min-width: 160px;
+            text-align: center;
+        }
+
+        .power-value {
+            font-family: monospace;
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #ffaa33;
+            transition: 0.05s linear;
+        }
+
+        .message-area {
+            background: #000000aa;
+            font-style: italic;
+            min-width: 160px;
+            text-align: center;
+            font-size: 0.9rem;
+        }
+
+        button {
+            background: #e0a82b;
+            border: none;
+            font-family: inherit;
+            font-weight: bold;
+            padding: 6px 24px;
+            border-radius: 60px;
+            font-size: 1rem;
+            color: #2c1c05;
+            cursor: pointer;
+            box-shadow: 0 4px 0 #7a4c1a;
+            transition: 0.07s linear;
+        }
+
+        button:active {
+            transform: translateY(2px);
+            box-shadow: 0 1px 0 #7a4c1a;
+        }
+
+        .tips {
+            font-size: 0.75rem;
+            background: #00000066;
+            padding: 6px 15px;
+            border-radius: 50px;
+            color: #ffecb3;
+        }
+
+        @keyframes windShake {
+            0% { transform: translate(0px, 0px); }
+            25% { transform: translate(2px, -1px); }
+            50% { transform: translate(-1px, 2px); }
+            75% { transform: translate(1px, 1px); }
+            100% { transform: translate(0, 0); }
+        }
+    </style>
+</head>
+<body>
+<div>
+    <div class="game-container">
+        <canvas id="archeryCanvas" width="1000" height="550" style="width:100%; height:auto; max-width:1000px; aspect-ratio:1000/550"></canvas>
+        <div class="info-panel">
+            <div class="score-board">🏹 战绩 <span id="scoreValue">0</span></div>
+            <div class="power-board">⚡ 蓄力威力 <span class="power-value" id="powerPercent">0</span>%</div>
+            <div class="message-area" id="statusMsg">✨ 按住鼠标/手指 蓄力射箭 ✨</div>
+            <button id="resetBtn">🌾 重置草原 🌾</button>
+        </div>
+        <div class="tips">
+            💡 长按 → 弓弦拉满 → 威力越大 → 但瞄准会<strong style="color:#f9b81b"> 恍惚晃动</strong> !  松开即射击靶心🎯
+        </div>
+    </div>
+</div>
+
+<script>
+    (function(){
+        // ---------- canvas 元素 ----------
+        const canvas = document.getElementById('archeryCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // ---------- 游戏配置 ----------
+        const TARGETS_COUNT = 20;      // 20个靶子
+        let targets = [];              // 存储靶子 { x, y, radius, points, hit }
+        let score = 0;
+        let animFrameId = null;
+
+        // 弓箭/蓄力相关
+        let isCharging = false;        // 是否正在长按蓄力
+        let power = 0;                 // 0 ~ 100 (威力百分比)
+        let chargeStartTime = 0;
+        let lastPower = 0;
+        
+        // 蓄力时【恍惚不定】的偏移量
+        let aimOffsetX = 0;
+        let aimOffsetY = 0;
+        let wobbleTime = 0;
+        
+        // 弓箭发射点 (玩家固定位置 - 弓箭手站在左下方)
+        const archerX = 120;
+        const archerY = 470;
+        
+        // 靶子默认生成范围 (避开太靠近弓箭手)
+        let targetBaseRadius = 28;
+        
+        // 游戏状态消息
+        let currentMessage = "🏹 长按蓄力！威力越大射程越远，但瞄准会晃动~";
+        let messageTimer = null;
+        
+        // 射箭特效 (箭矢飞行动画)
+        let isFlying = false;
+        let arrowFlight = {
+            active: false,
+            startX: archerX,
+            startY: archerY,
+            targetX: 0,
+            targetY: 0,
+            progress: 0,
+            powerUsed: 0,
+            hitTarget: null,   // 命中的靶子索引
+            hitPoint: 0
+        };
+        
+        // 命中特效
+        let hitEffect = { active: false, x: 0, y: 0, timer: 0 };
+        
+        // ---------- 辅助函数 ----------
+        function randomRange(min, max) {
+            return min + Math.random() * (max - min);
+        }
+        
+        // 生成全新靶子 (漂亮一点)
+        function generateTargets() {
+            let newTargets = [];
+            for(let i=0; i<TARGETS_COUNT; i++) {
+                let overlap = true;
+                let attempts = 0;
+                let x, y;
+                while(overlap && attempts < 100) {
+                    // 分布在右侧区域及草原各处，x范围: 350 ~ 920, y范围: 120 ~ 450
+                    x = randomRange(380, 920);
+                    y = randomRange(140, 450);
+                    overlap = false;
+                    // 避免和弓箭手太近，以及靶子之间相互重叠
+                    if(Math.hypot(x - archerX, y - archerY) < 110) overlap = true;
+                    for(let t of newTargets) {
+                        if(Math.hypot(t.x - x, t.y - y) < 55) { overlap = true; break; }
+                    }
+                    attempts++;
+                }
+                // 环数分数: 越靠近中心越高 (半径分环)
+                let points = 10;
+                newTargets.push({
+                    x: x, y: y, radius: targetBaseRadius,
+                    points: points,
+                    hit: false,     // 是否被射中(消失)
+                });
+            }
+            return newTargets;
+        }
+        
+        // 重置整个游戏
+        function resetGame() {
+            score = 0;
+            updateScoreUI();
+            targets = generateTargets();
+            // 停止蓄力
+            cancelCharge();
+            // 清除箭飞行
+            isFlying = false;
+            arrowFlight.active = false;
+            hitEffect.active = false;
+            setMessage("🌿 新的一轮！长按蓄力，感受草原之风 🌿");
+            updatePowerUI(0);
+            power = 0;
+            isCharging = false;
+            aimOffsetX = 0;
+            aimOffsetY = 0;
+            wobbleTime = 0;
+        }
+        
+        // 取消蓄力
+        function cancelCharge() {
+            if(isCharging) {
+                isCharging = false;
+                power = 0;
+                updatePowerUI(0);
+                // 不清偏移，重置动画偏移渐变消失
+                aimOffsetX = 0;
+                aimOffsetY = 0;
+            }
+        }
+        
+        // 蓄力更新 (每一帧根据蓄力时长增加威力)
+        function updateCharge(currentTime) {
+            if(!isCharging) return;
+            // 最大蓄力时长 1.2 秒 达到100%
+            let elapsed = Math.min((currentTime - chargeStartTime) / 1200, 1.0);
+            let newPower = Math.floor(elapsed * 100);
+            if(newPower !== power) {
+                power = newPower;
+                updatePowerUI(power);
+            }
+            if(power >= 100) {
+                power = 100;
+                updatePowerUI(100);
+            }
+        }
+        
+        // 更新威力UI
+        function updatePowerUI(val) {
+            const powerSpan = document.getElementById('powerPercent');
+            if(powerSpan) powerSpan.innerText = val;
+            // 动态改变power-bar样式 (边缘光晕)
+            let powerBoard = document.querySelector('.power-board');
+            if(powerBoard) {
+                let intensity = val / 100;
+                powerBoard.style.boxShadow = `0 0 ${8 + intensity * 12}px #ffaa33`;
+            }
+        }
+        
+        // 更新分数UI
+        function updateScoreUI() {
+            document.getElementById('scoreValue').innerText = score;
+        }
+        
+        function setMessage(msg, isError = false) {
+            if(messageTimer) clearTimeout(messageTimer);
+            currentMessage = msg;
+            const msgDiv = document.getElementById('statusMsg');
+            if(msgDiv) {
+                msgDiv.innerHTML = msg;
+                msgDiv.style.color = isError ? "#ffb347" : "#ffe6b3";
+            }
+            messageTimer = setTimeout(() => {
+                if(document.getElementById('statusMsg')) {
+                    document.getElementById('statusMsg').innerHTML = "🏹 按住蓄力，恍惚之间瞄准靶心 🏹";
+                    document.getElementById('statusMsg').style.color = "#ffe6b3";
+                }
+            }, 1800);
+        }
+        
+        // 命中处理 (威力越大，命中判定越容易，但也会影响精准偏移)
+        function releaseArrow(pointerX, pointerY) {
+            if(isFlying) {
+                setMessage("等箭命中再拉弓吧~", false);
+                return false;
+            }
+            if(!isCharging && power === 0) {
+                setMessage("✋ 请长按蓄力再射箭！ ✋", false);
+                return false;
+            }
+            // 注意: 蓄力结束释放时, 当前瞄准点基于 pointerX/pointerY (鼠标/触摸点 但要注意实际晃动效果, 由于我们晃动是屏幕偏移, 但是射箭逻辑要基于真实瞄准偏移瞄准器)
+            // 我们绘制准星的时候是根据鼠标实时+恍惚偏移展示，实际射箭的最终方向要基于“当前视角下玩家心里”的准星位置。
+            // 为了可玩性: 最终箭矢飞行目标点 = 蓄力结束时 实际鼠标/手指坐标 (但要在canvas范围内) + 额外恍惚偏移带来的“误差” 威力越大恍惚越严重
+            // 根据恍惚偏移进行瞄准误差模拟: 因为蓄力的时候射手手臂颤抖, 射出去的箭会偏向恍惚偏移方向。
+            let rawAimX = pointerX;
+            let rawAimY = pointerY;
+            
+            // 边界限制
+            rawAimX = Math.min(Math.max(rawAimX, 20), canvas.width - 20);
+            rawAimY = Math.min(Math.max(rawAimY, 20), canvas.height - 50);
+            
+            // 恍惚偏移惩罚: 威力越大力道越大偏移系数越高 (最大偏移±38px)
+            let wobbleFactor = (power / 100) ** 1.2;  // 威力高晃动惩罚指数增加
+            let offsetPenaltyX = aimOffsetX * 0.8 + (Math.random() - 0.5) * wobbleFactor * 28;
+            let offsetPenaltyY = aimOffsetY * 0.8 + (Math.random() - 0.5) * wobbleFactor * 28;
+            
+            let finalAimX = rawAimX + offsetPenaltyX;
+            let finalAimY = rawAimY + offsetPenaltyY;
+            
+            // 箭矢落点
+            let targetX = finalAimX;
+            let targetY = finalAimY;
+            
+            // 威力影响箭矢动能（增加额外偏移或者命中判定范围）但我们使用 威力增大时稍微让箭矢更精准？反而让偏移惩罚较大，但增加命中后分数倍率
+            // 实际命中判定: 以最终落点坐标搜索未击中的靶子，是否在靶子半径+威力加成范围内? 威力越大，爆炸范围(命中宽容度越大)
+            let hitIndex = -1;
+            let minDistance = 999;
+            let hitDistance = 0;
+            let bonus = 0;
+            for(let i=0; i<targets.length; i++) {
+                const t = targets[i];
+                if(t.hit) continue;
+                let dist = Math.hypot(targetX - t.x, targetY - t.y);
+                // 基础命中半径: 靶半径+5, 威力越大命中宽容度越大 (最大额外+20)
+                let hitRadius = t.radius + 3 + (power / 100) * 18;
+                if(dist < hitRadius) {
+                    if(dist < minDistance) {
+                        minDistance = dist;
+                        hitIndex = i;
+                        hitDistance = dist;
+                    }
+                }
+            }
+            
+            let gainedPoints = 0;
+            let hitTargetObj = null;
+            if(hitIndex !== -1) {
+                const target = targets[hitIndex];
+                if(!target.hit) {
+                    target.hit = true;
+                    // 环数算法: 离靶心越近分数越高, 加上威力蓄力满贯奖励
+                    let centerDist = Math.hypot(targetX - target.x, targetY - target.y);
+                    let accuracy = Math.max(0, 1 - (centerDist / target.radius));
+                    let basePoints = Math.floor(10 + accuracy * 20);  // 10~30分
+                    // 威力加成: 每10%威力 +1分
+                    let powerBonus = Math.floor(power / 12);
+                    gainedPoints = basePoints + powerBonus;
+                    gainedPoints = Math.min(gainedPoints, 55);
+                    score += gainedPoints;
+                    updateScoreUI();
+                    hitTargetObj = target;
+                    setMessage(`🎯 命中靶心！ +${gainedPoints} 分 (威力${power}% 偏移补偿) 🎯`, false);
+                    // 命中特效位置
+                    hitEffect.active = true;
+                    hitEffect.x = target.x;
+                    hitEffect.y = target.y;
+                    hitEffect.timer = 12;
+                }
+            } else {
+                setMessage(`💨 脱靶... 威力${power}% 但恍惚让你射偏了~ 继续努力 🌾`, true);
+                hitEffect.active = false;
+            }
+            
+            // 开始箭矢飞行特效
+            arrowFlight.active = true;
+            arrowFlight.startX = archerX;
+            arrowFlight.startY = archerY;
+            arrowFlight.targetX = targetX;
+            arrowFlight.targetY = targetY;
+            arrowFlight.progress = 0;
+            arrowFlight.powerUsed = power;
+            arrowFlight.hitTarget = hitTargetObj;
+            arrowFlight.hitPoint = gainedPoints;
+            isFlying = true;
+            
+            // 射击完成重置蓄力状态
+            cancelCharge();
+            power = 0;
+            updatePowerUI(0);
+            // 重置恍恍惚惚偏移 (缓慢恢复)
+            aimOffsetX = 0;
+            aimOffsetY = 0;
+            wobbleTime = 0;
+            
+            return true;
+        }
+        
+        // 更新恍惚偏移(蓄力时动态模拟晃动)
+        function updateWobble() {
+            if(isCharging && power > 0) {
+                // 功率越大晃动越剧烈 正弦+余弦 随机相位
+                let intensity = power / 70;  // 最大1.4左右
+                let time = Date.now() / 180;
+                // 两个不同频率晃动
+                let offX = Math.sin(time) * 6 * intensity + Math.cos(time * 2.3) * 4 * intensity;
+                let offY = Math.cos(time * 1.7) * 5 * intensity + Math.sin(time * 2.9) * 3 * intensity;
+                // 额外随机性
+                offX += (Math.random() - 0.5) * intensity * 3;
+                offY += (Math.random() - 0.5) * intensity * 3;
+                aimOffsetX = offX;
+                aimOffsetY = offY;
+            } else {
+                // 不蓄力时晃动归零 平滑一点
+                aimOffsetX *= 0.92;
+                aimOffsetY *= 0.92;
+                if(Math.abs(aimOffsetX) < 0.2) aimOffsetX = 0;
+                if(Math.abs(aimOffsetY) < 0.2) aimOffsetY = 0;
+            }
+        }
+        
+        // ---------- 绘图部分（草原+弓箭手+靶子+动态准星+箭）----------
+        function drawGrassAndSky() {
+            // 天空渐变
+            let gradSky = ctx.createLinearGradient(0, 0, 0, 300);
+            gradSky.addColorStop(0, "#c9e4ff");
+            gradSky.addColorStop(1, "#d4f1f9");
+            ctx.fillStyle = gradSky;
+            ctx.fillRect(0, 0, canvas.width, 280);
+            ctx.fillStyle = "#7cb518";
+            ctx.fillRect(0, 280, canvas.width, canvas.height-280);
+            // 草丛
+            for(let i=0;i<80;i++) {
+                ctx.beginPath();
+                let x = (i*23) % canvas.width;
+                let y = 400 + Math.sin(i*0.7)*8;
+                ctx.moveTo(x, y);
+                ctx.lineTo(x-8, y+28);
+                ctx.lineTo(x+8, y+28);
+                ctx.fillStyle = "#437c17";
+                ctx.fill();
+            }
+            // 远处蒙古包/云
+            ctx.fillStyle = "#f9f3cf";
+            ctx.shadowBlur=0;
+            ctx.beginPath(); ctx.ellipse(200, 110, 45, 30, 0, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = "#e0bc7c";
+            ctx.beginPath(); ctx.rect(185,115,30,25); ctx.fill();
+        }
+        
+        function drawArcher() {
+            // 弓箭手人物
+            ctx.save();
+            ctx.shadowBlur = 0;
+            ctx.beginPath();
+            ctx.arc(archerX-12, archerY-12, 18, 0, Math.PI*2);
+            ctx.fillStyle = "#ffcd94";
+            ctx.fill();
+            ctx.fillStyle = "#6b3e1c";
+            ctx.fillRect(archerX-25, archerY-8, 40, 28);
+            ctx.fillStyle = "#34200c";
+            ctx.fillRect(archerX-12, archerY-18, 12, 32);
+            // 弓
+            ctx.beginPath();
+            ctx.ellipse(archerX+6, archerY-12, 18, 8, -0.4, 0, Math.PI*2);
+            ctx.strokeStyle = "#b97f44";
+            ctx.lineWidth = 7;
+            ctx.stroke();
+            ctx.fillStyle = "#e0a14b";
+            ctx.beginPath();
+            ctx.moveTo(archerX+8, archerY-20);
+            ctx.lineTo(archerX+24, archerY-14);
+            ctx.lineTo(archerX+10, archerY-6);
+            ctx.fill();
+            ctx.restore();
+        }
+        
+        function drawTargets() {
+            for(let t of targets) {
+                if(t.hit) continue;
+                // 靶心
+                ctx.save();
+                ctx.shadowBlur = 4;
+                ctx.beginPath();
+                ctx.arc(t.x, t.y, t.radius, 0, Math.PI*2);
+                ctx.fillStyle = "#b5651e";
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(t.x, t.y, t.radius-6, 0, Math.PI*2);
+                ctx.fillStyle = "#eac086";
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(t.x, t.y, t.radius-12, 0, Math.PI*2);
+                ctx.fillStyle = "#b3413a";
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(t.x, t.y, 8, 0, Math.PI*2);
+                ctx.fillStyle = "#f9d66c";
+                ctx.fill();
+                ctx.fillStyle = "white";
+                ctx.font = "bold 20px monospace";
+                ctx.shadowBlur=0;
+                ctx.fillText("🎯", t.x-12, t.y-12);
+                ctx.restore();
+            }
+        }
+        
+        // 动态准星（带恍惚偏移）
+        function drawSight(mouseX, mouseY) {
+            let drawX = mouseX + aimOffsetX;
+            let drawY = mouseY + aimOffsetY;
+            ctx.save();
+            ctx.shadowBlur = 0;
+            ctx.beginPath();
+            ctx.arc(drawX, drawY, 14, 0, Math.PI*2);
+            ctx.strokeStyle = "#fff9c4";
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(drawX-24, drawY);
+            ctx.lineTo(drawX-12, drawY);
+            ctx.moveTo(drawX+12, drawY);
+            ctx.lineTo(drawX+24, drawY);
+            ctx.moveTo(drawX, drawY-24);
+            ctx.lineTo(drawX, drawY-12);
+            ctx.moveTo(drawX, drawY+12);
+            ctx.lineTo(drawX, drawY+24);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(drawX, drawY, 5, 0, Math.PI*2);
+            ctx.fillStyle = "#ffd966aa";
+            ctx.fill();
+            ctx.restore();
+            // 蓄力光环
+            if(isCharging && power > 0) {
+                ctx.beginPath();
+                ctx.arc(drawX, drawY, 20 + power/12, 0, Math.PI*2);
+                ctx.strokeStyle = `rgba(255, 180, 40, ${0.3+power/200})`;
+                ctx.lineWidth = 5;
+                ctx.stroke();
+            }
+        }
+        
+        function drawFlyingArrow() {
+            if(!arrowFlight.active) return;
+            let progress = arrowFlight.progress;
+            let x = arrowFlight.startX + (arrowFlight.targetX - arrowFlight.startX) * progress;
+            let y = arrowFlight.startY + (arrowFlight.targetY - arrowFlight.startY) * progress;
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(Math.atan2(arrowFlight.targetY - arrowFlight.startY, arrowFlight.targetX - arrowFlight.startX));
+            ctx.fillStyle = "#c97e3a";
+            ctx.fillRect(0, -3, 22, 6);
+            ctx.fillStyle = "#ac4e2b";
+            ctx.beginPath(); ctx.moveTo(22,0); ctx.lineTo(30,-4); ctx.lineTo(30,4); ctx.fill();
+            ctx.restore();
+        }
+        
+        function drawHitEffect() {
+            if(hitEffect.active && hitEffect.timer > 0) {
+                ctx.beginPath();
+                ctx.arc(hitEffect.x, hitEffect.y, 24, 0, Math.PI*2);
+                ctx.fillStyle = `rgba(255, 200, 50, ${0.6})`;
+                ctx.fill();
+                ctx.beginPath();
+                ctx.arc(hitEffect.x, hitEffect.y, 14, 0, Math.PI*2);
+                ctx.fillStyle = `rgba(255, 80, 20, 0.8)`;
+                ctx.fill();
+                hitEffect.timer--;
+                if(hitEffect.timer <=0) hitEffect.active=false;
+            }
+        }
+        
+        let mouseXonCanvas = canvas.width/2;
+        let mouseYonCanvas = canvas.height/2;
+        
+        // 动画更新 + 箭飞行逻辑
+        function animateFlight() {
+            if(arrowFlight.active) {
+                arrowFlight.progress += 0.045;
+                if(arrowFlight.progress >= 1.0) {
+                    arrowFlight.active = false;
+                    isFlying = false;
+                    // 移除已经标记的靶子（确保视觉消失，靶子在下次绘制已过滤hit）
+                    // 靶子的hit已经在release时设置好了，直接重新渲染即可
+                }
+            }
+        }
+        
+        function updateFrame() {
+            updateWobble();
+            if(isCharging) {
+                updateCharge(Date.now());
+            }
+            animateFlight();
+            drawAll();
+            requestAnimationFrame(updateFrame);
+        }
+        
+        function drawAll() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawGrassAndSky();
+            drawTargets();
+            drawArcher();
+            drawFlyingArrow();
+            drawHitEffect();
+            drawSight(mouseXonCanvas, mouseYonCanvas);
+            // 附加指示文本
+            ctx.font = "bold 16monospace";
+            ctx.fillStyle = "#fef0cf";
+            ctx.shadowBlur = 3;
+            ctx.fillText("⚡ 长按拉弓蓄力，恍惚晃动 ⚡", 30, 50);
+        }
+        
+        // ---------- 事件绑定 (鼠标/触摸) ----------
+        function getCanvasCoords(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            let clientX, clientY;
+            if(e.touches) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            let canvasX = (clientX - rect.left) * scaleX;
+            let canvasY = (clientY - rect.top) * scaleY;
+            canvasX = Math.min(Math.max(canvasX, 10), canvas.width-10);
+            canvasY = Math.min(Math.max(canvasY, 10), canvas.height-30);
+            return { mx: canvasX, my: canvasY };
+        }
+        
+        function onPointerStart(e) {
+            e.preventDefault();
+            if(isFlying) return;
+            cancelCharge();
+            const { mx, my } = getCanvasCoords(e);
+            mouseXonCanvas = mx;
+            mouseYonCanvas = my;
+            isCharging = true;
+            power = 0;
+            updatePowerUI(0);
+            chargeStartTime = Date.now();
+            setMessage("🏹 正在蓄力！ 恍惚不定 越久威力越大🏹", false);
+        }
+        
+        function onPointerMove(e) {
+            const { mx, my } = getCanvasCoords(e);
+            mouseXonCanvas = mx;
+            mouseYonCanvas = my;
+        }
+        
+        function onPointerEnd(e) {
+            if(!isCharging) return;
+            if(isFlying) {
+                cancelCharge();
+                return;
+            }
+            const { mx, my } = getCanvasCoords(e);
+            releaseArrow(mx, my);
+            isCharging = false;
+        }
+        
+        function attachEvents() {
+            canvas.addEventListener('mousedown', onPointerStart);
+            window.addEventListener('mousemove', onPointerMove);
+            window.addEventListener('mouseup', onPointerEnd);
+            canvas.addEventListener('touchstart', onPointerStart, {passive:false});
+            window.addEventListener('touchmove', onPointerMove, {passive:false});
+            window.addEventListener('touchend', onPointerEnd);
+            canvas.addEventListener('contextmenu', (e)=>e.preventDefault());
+        }
+        
+        // 初始化
+        function init() {
+            resetGame();
+            attachEvents();
+            updateFrame();
+        }
+        
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            resetGame();
+            isFlying = false;
+            arrowFlight.active = false;
+            cancelCharge();
+            setMessage("草原风起，新一轮狩猎开始！", false);
+        });
+        
+        init();
+    })();
+</script>
+</body>
+</html>
